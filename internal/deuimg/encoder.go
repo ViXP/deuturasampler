@@ -50,6 +50,9 @@ func (e *Encoder) generate_lum_chrome(r, g, b uint32) (lum, cb uint32) {
 }
 
 func (e *Encoder) scale_lum_chrome(normal_lum, normal_cb float64) (lum, cb uint32) {
+	normal_lum = math.Min(math.Max(normal_lum, 0), 1)
+	normal_cb = math.Min(math.Max(normal_cb, -0.5), 0.5)
+
 	lum = uint32(math.Round(normal_lum * e.maxValue))
 	cb = uint32(math.Round((normal_cb + 0.5) * e.maxValue))
 	return
@@ -93,7 +96,7 @@ func (e *Encoder) write_header() {
 func NewEncoder(bytes_per_pixel, height, width uint32, raw_data *[]byte) *Encoder {
 	bytes_per_color := bytes_per_pixel / 3
 
-	fmt.Printf("Width: %v, Height: %v, Bytes per pixel: %v\n", width, height, bytes_per_pixel)
+	fmt.Printf("Width: %v, Height: %v, Bytes per parameter: %v\n", width, height, bytes_per_color)
 	return &Encoder{
 		bytesPerPixel:    bytes_per_pixel,
 		bytesPerColor:    bytes_per_color,

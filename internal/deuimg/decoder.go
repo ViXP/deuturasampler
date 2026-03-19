@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"deuterasampler/internal/utils"
 	"fmt"
+	"math"
 )
 
 type Decoder struct {
@@ -22,17 +23,14 @@ func (d *Decoder) Process() []byte {
 
 	bytes_padding := ((d.Width*d.bytesPerParameter*3+3)/4)*4 - d.Width*d.bytesPerParameter*3
 
-	pixel_count := uint32(0)
-	for i := utils.FirstEncodedPixelByte; i < uint32(len(*d.rawData)); i += d.bytesPerPixel {
-		pixel_count++
-		lum, cb := d.read_lum_cb((*d.rawData)[i : i+d.bytesPerPixel])
-		r, g, b := d.generate_rgb(lum, cb)
-		d.write_pixel(r, g, b)
-
-		if pixel_count == d.Width {
-			d.write_padding(bytes_padding)
-			pixel_count = 0
+	for row := uint32(0); row < d.Height; row++ {
+		for col := uint32(0); col < d.Width; col++ {
+			i := utils.FirstEncodedPixelByte + col*d.bytesPerPixel + row*d.Width*d.bytesPerPixel
+			lum, cb := d.read_lum_cb((*d.rawData)[i : i+d.bytesPerPixel])
+			r, g, b := d.generate_rgb(lum, cb)
+			d.write_pixel(r, g, b)
 		}
+		d.write_padding(bytes_padding)
 	}
 
 	d.assign_file_size()
@@ -115,9 +113,9 @@ func (d *Decoder) generate_rgb(lum, cb uint32) (r, g, b uint32) {
 }
 
 func (d *Decoder) scale_colors(normal_r, normal_g, normal_b float64) (r, g, b uint32) {
-	r = uint32(normal_r * d.maxValue)
-	g = uint32(normal_g * d.maxValue)
-	b = uint32(normal_b * d.maxValue)
+	r = uint32(math.Min(math.Max(normal_r*d.maxValue, 0), d.maxValue))
+	g = uint32(math.Min(math.Max(normal_g*d.maxValue, 0), d.maxValue))
+	b = uint32(math.Min(math.Max(normal_b*d.maxValue, 0), d.maxValue))
 	return
 }
 
@@ -129,7 +127,7 @@ func (d *Decoder) write_pixel(r, g, b uint32) {
 
 func NewDecoder(bytes_per_parameter, height, width uint32, raw_data *[]byte) *Decoder {
 	bytes_per_pixel := bytes_per_parameter * 2
-	fmt.Printf("Width: %v, Height: %v, Bytes per component: %v\n", width, height, bytes_per_parameter)
+	fmt.Printf("Width: %v, Height: %v, Bytes per parameter: %v\n", width, height, bytes_per_parameter)
 	return &Decoder{
 		Height:            height,
 		Width:             width,
