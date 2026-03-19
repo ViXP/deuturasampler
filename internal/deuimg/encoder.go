@@ -71,7 +71,7 @@ func (e *Encoder) read_rgb(bytes_stream []byte) (r, g, b uint32) {
 	case utils.Bits16:
 		r = uint32(bytes_stream[0]) | uint32(bytes_stream[1])<<8
 		g = uint32(bytes_stream[2]) | uint32(bytes_stream[3])<<8
-		b = uint32(bytes_stream[3]) | uint32(bytes_stream[4])<<8
+		b = uint32(bytes_stream[4]) | uint32(bytes_stream[5])<<8
 	case utils.Bits32:
 		r = uint32(bytes_stream[0]) | uint32(bytes_stream[1])<<8 | uint32(bytes_stream[2])<<16 | uint32(bytes_stream[3])<<24
 		g = uint32(bytes_stream[4]) | uint32(bytes_stream[5])<<8 | uint32(bytes_stream[6])<<16 | uint32(bytes_stream[7])<<24
