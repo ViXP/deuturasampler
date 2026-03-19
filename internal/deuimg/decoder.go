@@ -5,6 +5,7 @@ import (
 	"deuterasampler/internal/utils"
 	"fmt"
 	"math"
+	"sync"
 )
 
 type Decoder struct {
@@ -21,34 +22,49 @@ type Decoder struct {
 func (d *Decoder) Process() []byte {
 	d.write_header_to_buffer()
 
-	bytes_padding := ((d.Width*d.bytesPerParameter*3+3)/4)*4 - d.Width*d.bytesPerParameter*3
+	var wg sync.WaitGroup
+
+	fullRowWidth := ((d.Width*d.bytesPerParameter*3 + 3) / 4) * 4
+	rowData := make([][]byte, d.Height)
+	wg.Add(int(d.Height))
 
 	for row := uint32(0); row < d.Height; row++ {
-		for col := uint32(0); col < d.Width; col++ {
-			i := utils.FirstEncodedPixelByte + col*d.bytesPerPixel + row*d.Width*d.bytesPerPixel
-			lum, cb := d.read_lum_cb((*d.rawData)[i : i+d.bytesPerPixel])
-			r, g, b := d.generate_rgb(lum, cb)
-			d.write_pixel(r, g, b)
-		}
-		d.write_padding(bytes_padding)
+		go func(row_index uint32, waitGroup *sync.WaitGroup) {
+			rowData[row_index] = make([]byte, fullRowWidth)
+			byte_index := uint32(0)
+
+			for col := uint32(0); col < d.Width; col++ {
+				position := utils.FirstEncodedPixelByte + col*d.bytesPerPixel + row_index*d.Width*d.bytesPerPixel
+				lum, cb := d.read_lum_cb((*d.rawData)[position : position+d.bytesPerPixel])
+				r, g, b := d.generate_rgb(lum, cb)
+
+				utils.WriteBytes(rowData[row_index][byte_index:byte_index+d.bytesPerParameter], r, d.bytesPerParameter)
+				byte_index += d.bytesPerParameter
+
+				utils.WriteBytes(rowData[row_index][byte_index:byte_index+d.bytesPerParameter], g, d.bytesPerParameter)
+				byte_index += d.bytesPerParameter
+
+				utils.WriteBytes(rowData[row_index][byte_index:byte_index+d.bytesPerParameter], b, d.bytesPerParameter)
+				byte_index += d.bytesPerParameter
+			}
+
+			waitGroup.Done()
+		}(row, &wg)
+	}
+
+	wg.Wait()
+
+	for _, data := range rowData {
+		d.decodingBuffer.Write(data)
 	}
 
 	d.assign_file_size()
 
 	decoded_data := d.decodingBuffer.Bytes()
 
-	for i, b := range utils.DownsampleValue(d.FileSize, utils.Bits32) {
-		decoded_data[2+i] = b
-	}
+	utils.WriteBytes(decoded_data[2:6], d.FileSize, utils.Bits32)
 
 	return decoded_data
-}
-
-func (d *Decoder) write_padding(bytes_padding uint32) {
-	if bytes_padding == 0 {
-		return
-	}
-	d.decodingBuffer.Write(make([]byte, bytes_padding))
 }
 
 func (d *Decoder) write_header_to_buffer() {
@@ -56,21 +72,12 @@ func (d *Decoder) write_header_to_buffer() {
 	header[0] = byte('B')
 	header[1] = byte('M')
 
-	for i, b := range utils.DownsampleValue(utils.BmpHeaderSize, utils.Bits32) {
-		header[10+i] = b
-	}
-
+	utils.WriteBytes(header[10:14], utils.BmpHeaderSize, utils.Bits32)
 	header[14] = byte(40)
-	for i, b := range utils.DownsampleValue(d.Width, utils.Bits32) {
-		header[18+i] = b
-	}
-	for i, b := range utils.DownsampleValue(d.Height, utils.Bits32) {
-		header[22+i] = b
-	}
+	utils.WriteBytes(header[18:22], d.Width, utils.Bits32)
+	utils.WriteBytes(header[22:26], d.Height, utils.Bits32)
 	header[26] = 1
-	for i, b := range utils.DownsampleValue(d.bytesPerParameter*3*8, utils.Bits16) {
-		header[28+i] = b
-	}
+	utils.WriteBytes(header[28:30], d.bytesPerParameter*3*8, utils.Bits16)
 	d.decodingBuffer.Write(header)
 }
 
@@ -122,12 +129,6 @@ func (d *Decoder) scale_colors(normal_r, normal_g, normal_b float64) (r, g, b ui
 	g = uint32(math.Min(math.Max(normal_g*d.maxValue, 0), d.maxValue))
 	b = uint32(math.Min(math.Max(normal_b*d.maxValue, 0), d.maxValue))
 	return
-}
-
-func (d *Decoder) write_pixel(r, g, b uint32) {
-	d.decodingBuffer.Write(utils.DownsampleValue(r, d.bytesPerParameter))
-	d.decodingBuffer.Write(utils.DownsampleValue(g, d.bytesPerParameter))
-	d.decodingBuffer.Write(utils.DownsampleValue(b, d.bytesPerParameter))
 }
 
 func NewDecoder(bytes_per_parameter, height, width uint32, raw_data *[]byte) *Decoder {
