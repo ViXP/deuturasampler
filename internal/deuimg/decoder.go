@@ -55,6 +55,11 @@ func (d *Decoder) write_header_to_buffer() {
 	header := make([]byte, utils.BmpHeaderSize)
 	header[0] = byte('B')
 	header[1] = byte('M')
+
+	for i, b := range utils.DownsampleValue(utils.BmpHeaderSize, utils.Bits32) {
+		header[10+i] = b
+	}
+
 	header[14] = byte(40)
 	for i, b := range utils.DownsampleValue(d.Width, utils.Bits32) {
 		header[18+i] = b
