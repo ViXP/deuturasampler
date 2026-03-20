@@ -9,42 +9,49 @@ import (
 )
 
 type Encoder struct {
-	Height           uint32
-	Width            uint32
-	FileSize         uint32
-	bytesPerPixel    uint32
-	bytesPerColor    uint32
-	maxValue         float64
-	rawData          *[]byte
-	processingBuffer *bytes.Buffer
+	Height            uint32
+	Width             uint32
+	FileSize          uint32
+	chromaMode        []byte
+	bytesPerPixel     uint32
+	bytesPerParameter uint32
+	maxValue          float64
+	rawData           *[]byte
+	processingBuffer  *bytes.Buffer
 }
 
 func (e *Encoder) Process() []byte {
-	e.write_header()
+	e.writeHeader()
 
-	bytesPerWidth := ((e.Width*e.bytesPerPixel + 3) / 4) * 4
+	bytesPerInputWidth := ((e.Width*e.bytesPerPixel + 3) / 4) * 4
 
 	rowsData := make([][]byte, e.Height)
+	subsamplingFactors := e.calculateSubsamplingFactors()
+	encodedRowsLength := e.calculateRowLengths(subsamplingFactors)
+
 	var wg sync.WaitGroup
 	wg.Add(int(e.Height))
 
 	for row := uint32(0); row < e.Height; row++ {
-		go func(row_index uint32, waitGroup *sync.WaitGroup) {
-			rowsData[row_index] = make([]byte, e.bytesPerColor*2*e.Width)
-			byte_index := uint32(0)
+		go func(rowIndex uint32, waitGroup *sync.WaitGroup) {
+			rowOrder := byte(rowIndex % 2)
+			byteIndex := uint32(0)
+			rowsData[rowIndex] = make([]byte, encodedRowsLength[rowOrder])
 
 			for col := uint32(0); col < e.Width; col++ {
-				position := utils.BmpHeaderSize + row_index*bytesPerWidth + col*e.bytesPerPixel
+				position := utils.BmpHeaderSize + rowIndex*bytesPerInputWidth + col*e.bytesPerPixel
 				pixel_data := (*e.rawData)[position : position+e.bytesPerPixel]
 
-				r, g, b := e.read_rgb(pixel_data)
-				lum, cb := e.generate_lum_chrome(r, g, b)
+				r, g, b := e.readRgb(pixel_data)
+				lum, cb := e.generateLumChrome(r, g, b)
 
-				utils.WriteBytes(rowsData[row_index][byte_index:byte_index+e.bytesPerColor], lum, e.bytesPerColor)
-				byte_index += e.bytesPerColor
+				utils.WriteBytes(rowsData[rowIndex][byteIndex:byteIndex+e.bytesPerParameter], lum, e.bytesPerParameter)
+				byteIndex += e.bytesPerParameter
 
-				utils.WriteBytes(rowsData[row_index][byte_index:byte_index+e.bytesPerColor], cb, e.bytesPerColor)
-				byte_index += e.bytesPerColor
+				if subsamplingFactors[rowOrder] != 0 && (col/subsamplingFactors[rowOrder])*subsamplingFactors[rowOrder] == col {
+					utils.WriteBytes(rowsData[rowIndex][byteIndex:byteIndex+e.bytesPerParameter], cb, e.bytesPerParameter)
+					byteIndex += e.bytesPerParameter
+				}
 			}
 
 			waitGroup.Done()
@@ -60,17 +67,43 @@ func (e *Encoder) Process() []byte {
 	return e.processingBuffer.Bytes()
 }
 
-func (e *Encoder) generate_lum_chrome(r, g, b uint32) (lum, cb uint32) {
-	normal_r, normal_g, normal_b := e.normalize_colors(r, g, b)
+func (e *Encoder) calculateSubsamplingFactors() (factors []uint32) {
+	factors = make([]uint32, 2)
+
+	for i := range factors {
+		if e.chromaMode[i] == 0 {
+			factors[i] = uint32(0)
+		} else {
+			factors[i] = uint32(utils.LumaMode / e.chromaMode[i])
+		}
+	}
+	return
+}
+
+func (e *Encoder) calculateRowLengths(subsamplingFactors []uint32) (rowsLength []uint32) {
+	rowsLength = make([]uint32, len(subsamplingFactors))
+
+	for i, factor := range subsamplingFactors {
+		if factor == 0 {
+			rowsLength[i] = e.Width * e.bytesPerParameter
+		} else {
+			rowsLength[i] = (e.Width/factor)*e.bytesPerParameter + e.Width*e.bytesPerParameter
+		}
+	}
+	return
+}
+
+func (e *Encoder) generateLumChrome(r, g, b uint32) (lum, cb uint32) {
+	normal_r, normal_g, normal_b := e.normalizeColors(r, g, b)
 	normal_lum := 0.2126*normal_r + 0.7152*normal_g + 0.114*normal_b
 	normal_cb := (normal_b - normal_lum) / 1.772
 
-	lum, cb = e.scale_lum_chrome(normal_lum, normal_cb)
+	lum, cb = e.scaleLumChrome(normal_lum, normal_cb)
 
 	return
 }
 
-func (e *Encoder) scale_lum_chrome(normal_lum, normal_cb float64) (lum, cb uint32) {
+func (e *Encoder) scaleLumChrome(normal_lum, normal_cb float64) (lum, cb uint32) {
 	normal_lum = math.Min(math.Max(normal_lum, 0), 1)
 	normal_cb = math.Min(math.Max(normal_cb, -0.5), 0.5)
 
@@ -79,15 +112,15 @@ func (e *Encoder) scale_lum_chrome(normal_lum, normal_cb float64) (lum, cb uint3
 	return
 }
 
-func (e *Encoder) normalize_colors(r, g, b uint32) (normal_r, normal_g, normal_b float64) {
+func (e *Encoder) normalizeColors(r, g, b uint32) (normal_r, normal_g, normal_b float64) {
 	normal_r = float64(r) / e.maxValue
 	normal_g = float64(g) / e.maxValue
 	normal_b = float64(b) / e.maxValue
 	return
 }
 
-func (e *Encoder) read_rgb(bytes_stream []byte) (r, g, b uint32) {
-	switch e.bytesPerColor {
+func (e *Encoder) readRgb(bytes_stream []byte) (r, g, b uint32) {
+	switch e.bytesPerParameter {
 	case utils.Bits8:
 		r = uint32(bytes_stream[0])
 		g = uint32(bytes_stream[1])
@@ -101,14 +134,14 @@ func (e *Encoder) read_rgb(bytes_stream []byte) (r, g, b uint32) {
 		g = uint32(bytes_stream[4]) | uint32(bytes_stream[5])<<8 | uint32(bytes_stream[6])<<16 | uint32(bytes_stream[7])<<24
 		b = uint32(bytes_stream[8]) | uint32(bytes_stream[9])<<8 | uint32(bytes_stream[10])<<16 | uint32(bytes_stream[11])<<24
 	default:
-		panic(fmt.Sprintf("The %vbits/color space is not supported!", e.bytesPerColor*8))
+		panic(fmt.Sprintf("The %vbits/color space is not supported!", e.bytesPerParameter*8))
 	}
 
 	return
 }
 
-func (e *Encoder) write_header() {
-	header := make([]byte, utils.FirstEncodedPixelByte)
+func (e *Encoder) writeHeader() {
+	header := make([]byte, utils.DeuimgHeaderSize)
 
 	for i, sym := range "(-_-)" {
 		header[i] = byte(sym)
@@ -116,23 +149,30 @@ func (e *Encoder) write_header() {
 
 	utils.WriteBytes(header[5:9], e.Width, utils.Bits32)
 	utils.WriteBytes(header[9:13], e.Height, utils.Bits32)
-	utils.WriteBytes(header[13:17], e.bytesPerColor, utils.Bits32)
+	utils.WriteBytes(header[13:17], e.bytesPerParameter, utils.Bits32)
+	header[17] = e.chromaMode[0]
+	header[18] = e.chromaMode[1]
 	e.processingBuffer.Write(header)
 }
 
-func NewEncoder(bytes_per_pixel, height, width uint32, raw_data *[]byte) *Encoder {
-	bytes_per_color := bytes_per_pixel / 3
+func NewEncoder(bytesPerPixel, height, width uint32, chromaMode []byte, rawData *[]byte) *Encoder {
+	bytesPerParameter := bytesPerPixel / 3
 
-	fmt.Printf("Width: %v, Height: %v, Bytes per parameter: %v\n", width, height, bytes_per_color)
+	fmt.Printf(
+		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n", width, height, bytesPerParameter,
+		utils.LumaMode, chromaMode[0], chromaMode[1],
+	)
+
 	return &Encoder{
-		bytesPerPixel:    bytes_per_pixel,
-		bytesPerColor:    bytes_per_color,
-		Height:           height,
-		Width:            width,
-		FileSize:         uint32(len(*raw_data)),
-		maxValue:         utils.GetMaxValue(bytes_per_color),
-		rawData:          raw_data,
-		processingBuffer: bytes.NewBuffer(nil),
+		bytesPerPixel:     bytesPerPixel,
+		bytesPerParameter: bytesPerParameter,
+		Height:            height,
+		Width:             width,
+		FileSize:          uint32(len(*rawData)),
+		chromaMode:        chromaMode,
+		maxValue:          utils.GetMaxValue(bytesPerParameter),
+		rawData:           rawData,
+		processingBuffer:  bytes.NewBuffer(nil),
 	}
 }
 

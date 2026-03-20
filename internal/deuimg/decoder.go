@@ -14,13 +14,14 @@ type Decoder struct {
 	FileSize          uint32
 	bytesPerPixel     uint32
 	bytesPerParameter uint32
+	chromaMode        []byte
 	maxValue          float64
 	rawData           *[]byte
 	decodingBuffer    *bytes.Buffer
 }
 
 func (d *Decoder) Process() []byte {
-	d.write_header_to_buffer()
+	d.writeHeader()
 
 	var wg sync.WaitGroup
 
@@ -29,23 +30,23 @@ func (d *Decoder) Process() []byte {
 	wg.Add(int(d.Height))
 
 	for row := uint32(0); row < d.Height; row++ {
-		go func(row_index uint32, waitGroup *sync.WaitGroup) {
-			rowData[row_index] = make([]byte, fullRowWidth)
-			byte_index := uint32(0)
+		go func(rowIndex uint32, waitGroup *sync.WaitGroup) {
+			rowData[rowIndex] = make([]byte, fullRowWidth)
+			byteIndex := uint32(0)
 
 			for col := uint32(0); col < d.Width; col++ {
-				position := utils.FirstEncodedPixelByte + col*d.bytesPerPixel + row_index*d.Width*d.bytesPerPixel
-				lum, cb := d.read_lum_cb((*d.rawData)[position : position+d.bytesPerPixel])
-				r, g, b := d.generate_rgb(lum, cb)
+				position := utils.DeuimgHeaderSize + col*d.bytesPerPixel + rowIndex*d.Width*d.bytesPerPixel
+				lum, cb := d.readLumCb((*d.rawData)[position : position+d.bytesPerPixel])
+				r, g, b := d.generateRgb(lum, cb)
 
-				utils.WriteBytes(rowData[row_index][byte_index:byte_index+d.bytesPerParameter], r, d.bytesPerParameter)
-				byte_index += d.bytesPerParameter
+				utils.WriteBytes(rowData[rowIndex][byteIndex:byteIndex+d.bytesPerParameter], r, d.bytesPerParameter)
+				byteIndex += d.bytesPerParameter
 
-				utils.WriteBytes(rowData[row_index][byte_index:byte_index+d.bytesPerParameter], g, d.bytesPerParameter)
-				byte_index += d.bytesPerParameter
+				utils.WriteBytes(rowData[rowIndex][byteIndex:byteIndex+d.bytesPerParameter], g, d.bytesPerParameter)
+				byteIndex += d.bytesPerParameter
 
-				utils.WriteBytes(rowData[row_index][byte_index:byte_index+d.bytesPerParameter], b, d.bytesPerParameter)
-				byte_index += d.bytesPerParameter
+				utils.WriteBytes(rowData[rowIndex][byteIndex:byteIndex+d.bytesPerParameter], b, d.bytesPerParameter)
+				byteIndex += d.bytesPerParameter
 			}
 
 			waitGroup.Done()
@@ -58,7 +59,7 @@ func (d *Decoder) Process() []byte {
 		d.decodingBuffer.Write(data)
 	}
 
-	d.assign_file_size()
+	d.assignFileSize()
 
 	decoded_data := d.decodingBuffer.Bytes()
 
@@ -67,7 +68,7 @@ func (d *Decoder) Process() []byte {
 	return decoded_data
 }
 
-func (d *Decoder) write_header_to_buffer() {
+func (d *Decoder) writeHeader() {
 	header := make([]byte, utils.BmpHeaderSize)
 	header[0] = byte('B')
 	header[1] = byte('M')
@@ -81,11 +82,11 @@ func (d *Decoder) write_header_to_buffer() {
 	d.decodingBuffer.Write(header)
 }
 
-func (d *Decoder) assign_file_size() {
+func (d *Decoder) assignFileSize() {
 	d.FileSize = uint32(d.decodingBuffer.Len())
 }
 
-func (d *Decoder) read_lum_cb(data []byte) (lum, cb uint32) {
+func (d *Decoder) readLumCb(data []byte) (lum, cb uint32) {
 	switch d.bytesPerParameter {
 	case utils.Bits8:
 		lum = uint32(data[0])
@@ -103,45 +104,46 @@ func (d *Decoder) read_lum_cb(data []byte) (lum, cb uint32) {
 	return
 }
 
-func (d *Decoder) normalize_lum_chrome(luminance, cb uint32) (normal_lum, normal_cb float64) {
+func (d *Decoder) normalizeLumChrome(luminance, cb uint32) (normal_lum, normal_cb float64) {
 	normal_lum = float64(luminance) / d.maxValue
 	normal_cb = float64(cb)/d.maxValue - 0.5
 
 	return
 }
 
-func (d *Decoder) generate_rgb(lum, cb uint32) (r, g, b uint32) {
+func (d *Decoder) generateRgb(lum, cb uint32) (r, g, b uint32) {
 	var normal_b, normal_g, normal_r, normal_lum, normal_cb float64
-	normal_lum, normal_cb = d.normalize_lum_chrome(lum, cb)
+	normal_lum, normal_cb = d.normalizeLumChrome(lum, cb)
 
 	normal_b = (normal_cb * 1.772) + normal_lum
 	differentiator := 0.25 * (normal_b - normal_lum)
 	normal_r = normal_lum - differentiator
 	normal_g = normal_lum + differentiator
 
-	r, g, b = d.scale_colors(normal_r, normal_g, normal_b)
+	r, g, b = d.scaleColors(normal_r, normal_g, normal_b)
 
 	return
 }
 
-func (d *Decoder) scale_colors(normal_r, normal_g, normal_b float64) (r, g, b uint32) {
+func (d *Decoder) scaleColors(normal_r, normal_g, normal_b float64) (r, g, b uint32) {
 	r = uint32(math.Min(math.Max(normal_r*d.maxValue, 0), d.maxValue))
 	g = uint32(math.Min(math.Max(normal_g*d.maxValue, 0), d.maxValue))
 	b = uint32(math.Min(math.Max(normal_b*d.maxValue, 0), d.maxValue))
 	return
 }
 
-func NewDecoder(bytes_per_parameter, height, width uint32, raw_data *[]byte) *Decoder {
-	bytes_per_pixel := bytes_per_parameter * 2
+func NewDecoder(bytes_per_parameter, height, width uint32, chromaMode []byte, rawData *[]byte) *Decoder {
+	bytesPerPixel := bytes_per_parameter * 2
 	fmt.Printf("Width: %v, Height: %v, Bytes per parameter: %v\n", width, height, bytes_per_parameter)
 	return &Decoder{
 		Height:            height,
 		Width:             width,
 		FileSize:          0,
-		bytesPerPixel:     bytes_per_pixel,
+		bytesPerPixel:     bytesPerPixel,
 		bytesPerParameter: bytes_per_parameter,
+		chromaMode:        chromaMode,
 		maxValue:          utils.GetMaxValue(bytes_per_parameter),
-		rawData:           raw_data,
+		rawData:           rawData,
 		decodingBuffer:    bytes.NewBuffer(nil),
 	}
 }

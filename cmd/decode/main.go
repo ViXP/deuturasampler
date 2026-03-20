@@ -26,7 +26,8 @@ func decode(path string) {
 }
 
 func decodeDEUImg(data []byte) []byte {
-	var width, height, bytes_per_parameter uint32
+	var width, height, bytesPerParameter uint32
+	var chromaMode []byte
 
 	if data[2] != '_' {
 		panic("this file is not encoded properly!")
@@ -34,9 +35,10 @@ func decodeDEUImg(data []byte) []byte {
 
 	width = binary.LittleEndian.Uint32(data[5:9])
 	height = binary.LittleEndian.Uint32(data[9:13])
-	bytes_per_parameter = binary.LittleEndian.Uint32(data[13:17])
+	bytesPerParameter = binary.LittleEndian.Uint32(data[13:17])
+	chromaMode = data[17:18]
 
-	decoder := deuimg.NewDecoder(bytes_per_parameter, height, width, &data)
+	decoder := deuimg.NewDecoder(bytesPerParameter, height, width, chromaMode, &data)
 
 	return decoder.Process()
 }
