@@ -5,7 +5,6 @@ import (
 	"deuterasampler/internal/utils"
 	"fmt"
 	"math"
-	"sync"
 )
 
 type Decoder struct {
@@ -22,11 +21,17 @@ type Decoder struct {
 func (d *Decoder) Process() []byte {
 	d.writeHeader()
 
-	var wg sync.WaitGroup
-
 	fullRowWidth := ((d.Width*d.bytesPerParameter*3 + 3) / 4) * 4
 	outputData := make([][]byte, d.Height)
 	subsamplingFactors := utils.ResolveSubsamplingFactors(d.chromaMode)
+
+	var cbsPerRow uint32
+	if subsamplingFactors[0] == 0 {
+		cbsPerRow = 1
+	} else {
+		cbsPerRow = uint32(math.Ceil(float64(d.Width) / float64(subsamplingFactors[0])))
+	}
+	cbBuffer := make([]uint32, cbsPerRow)
 
 	var position uint32 = utils.DeuimgHeaderSize
 
@@ -34,16 +39,37 @@ func (d *Decoder) Process() []byte {
 		outputData[row] = make([]byte, fullRowWidth)
 		byteIndex := uint32(0)
 
-		var cb uint32
+		var rowOrder uint32
+		if row == 0 {
+			rowOrder = 0
+		} else {
+			rowOrder = row % 2
+		}
 
 		for pxlNum := uint32(0); pxlNum < d.Width; pxlNum++ {
-			isSubsampled := pxlNum%subsamplingFactors[0] == 0
-			lum := d.readLum((*d.encodedData)[position:])
-
-			if isSubsampled {
-				cb = d.readCb((*d.encodedData)[position+d.bytesPerParameter:])
+			var cbGroup uint32
+			if subsamplingFactors[0] == 0 {
+				cbGroup = 0
+			} else {
+				cbGroup = pxlNum / subsamplingFactors[0]
 			}
 
+			var isSubsampled bool
+			if subsamplingFactors[rowOrder] == 0 {
+				isSubsampled = false
+			} else {
+				isSubsampled = pxlNum%subsamplingFactors[rowOrder] == 0
+			}
+
+			var cb uint32
+			if isSubsampled {
+				cb = d.readCb((*d.encodedData)[position+d.bytesPerParameter : position+d.bytesPerParameter*2])
+				cbBuffer[cbGroup] = cb
+			} else {
+				cb = cbBuffer[cbGroup]
+			}
+
+			lum := d.readLum((*d.encodedData)[position : position+d.bytesPerParameter])
 			r, g, b := d.generateRgb(lum, cb)
 
 			utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], r, d.bytesPerParameter)
@@ -61,8 +87,6 @@ func (d *Decoder) Process() []byte {
 			}
 		}
 	}
-
-	wg.Wait()
 
 	for _, data := range outputData {
 		d.decodingBuffer.Write(data)
@@ -154,7 +178,10 @@ func (d *Decoder) scalepxlNumors(normal_r, normal_g, normal_b float64) (r, g, b 
 }
 
 func NewDecoder(bytesPerParameter, height, width uint32, chromaMode []byte, encodedData *[]byte) *Decoder {
-	fmt.Printf("Width: %v, Height: %v, Bytes per parameter: %v\n", width, height, bytesPerParameter)
+	fmt.Printf(
+		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n", width, height, bytesPerParameter,
+		utils.LumaMode, chromaMode[0], chromaMode[1],
+	)
 	return &Decoder{
 		Height:            height,
 		Width:             width,
