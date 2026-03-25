@@ -25,3 +25,29 @@ func WriteBytes(slice []byte, value uint32, precision uint32) {
 		panic(fmt.Sprintf("The %vbits/parameter precision is not supported!", precision*8))
 	}
 }
+
+func ResolveSubsamplingFactors(chromaModes []byte) (factors []uint32) {
+	factors = make([]uint32, 2)
+
+	for i := range factors {
+		if chromaModes[i] == 0 {
+			factors[i] = uint32(0)
+		} else {
+			factors[i] = uint32(LumaMode / chromaModes[i])
+		}
+	}
+	return
+}
+
+func CalculateEncodedRowLengths(subsamplingFactors []uint32, imageWidth, bytesPerParameter uint32) (rowsLength []uint32) {
+	rowsLength = make([]uint32, len(subsamplingFactors))
+
+	for i, factor := range subsamplingFactors {
+		if factor == 0 {
+			rowsLength[i] = imageWidth * bytesPerParameter
+		} else {
+			rowsLength[i] = (imageWidth/factor)*bytesPerParameter + imageWidth*bytesPerParameter
+		}
+	}
+	return
+}

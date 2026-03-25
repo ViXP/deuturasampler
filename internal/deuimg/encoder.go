@@ -26,8 +26,8 @@ func (e *Encoder) Process() []byte {
 	bytesPerInputWidth := ((e.Width*e.bytesPerPixel + 3) / 4) * 4
 
 	rowsData := make([][]byte, e.Height)
-	subsamplingFactors := e.calculateSubsamplingFactors()
-	encodedRowsLength := e.calculateRowLengths(subsamplingFactors)
+	subsamplingFactors := utils.ResolveSubsamplingFactors(e.chromaMode)
+	encodedRowsLength := utils.CalculateEncodedRowLengths(subsamplingFactors, e.Width, e.bytesPerParameter)
 
 	var wg sync.WaitGroup
 	wg.Add(int(e.Height))
@@ -40,9 +40,9 @@ func (e *Encoder) Process() []byte {
 
 			for col := uint32(0); col < e.Width; col++ {
 				position := utils.BmpHeaderSize + rowIndex*bytesPerInputWidth + col*e.bytesPerPixel
-				pixel_data := (*e.rawData)[position : position+e.bytesPerPixel]
+				pixelData := (*e.rawData)[position : position+e.bytesPerPixel]
 
-				r, g, b := e.readRgb(pixel_data)
+				r, g, b := e.readRgb(pixelData)
 				lum, cb := e.generateLumChrome(r, g, b)
 
 				utils.WriteBytes(rowsData[rowIndex][byteIndex:byteIndex+e.bytesPerParameter], lum, e.bytesPerParameter)
@@ -65,32 +65,6 @@ func (e *Encoder) Process() []byte {
 	}
 
 	return e.processingBuffer.Bytes()
-}
-
-func (e *Encoder) calculateSubsamplingFactors() (factors []uint32) {
-	factors = make([]uint32, 2)
-
-	for i := range factors {
-		if e.chromaMode[i] == 0 {
-			factors[i] = uint32(0)
-		} else {
-			factors[i] = uint32(utils.LumaMode / e.chromaMode[i])
-		}
-	}
-	return
-}
-
-func (e *Encoder) calculateRowLengths(subsamplingFactors []uint32) (rowsLength []uint32) {
-	rowsLength = make([]uint32, len(subsamplingFactors))
-
-	for i, factor := range subsamplingFactors {
-		if factor == 0 {
-			rowsLength[i] = e.Width * e.bytesPerParameter
-		} else {
-			rowsLength[i] = (e.Width/factor)*e.bytesPerParameter + e.Width*e.bytesPerParameter
-		}
-	}
-	return
 }
 
 func (e *Encoder) generateLumChrome(r, g, b uint32) (lum, cb uint32) {

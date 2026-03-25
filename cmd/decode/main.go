@@ -36,7 +36,7 @@ func decodeDEUImg(data []byte) []byte {
 	width = binary.LittleEndian.Uint32(data[5:9])
 	height = binary.LittleEndian.Uint32(data[9:13])
 	bytesPerParameter = binary.LittleEndian.Uint32(data[13:17])
-	chromaMode = data[17:18]
+	chromaMode = data[17:19]
 
 	decoder := deuimg.NewDecoder(bytesPerParameter, height, width, chromaMode, &data)
 
