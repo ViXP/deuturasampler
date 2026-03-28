@@ -12,11 +12,10 @@ import (
 type Decoder struct {
 	Height            uint32
 	Width             uint32
-	FileSize          uint32
 	bytesPerParameter uint32
 	chromaMode        []byte
 	maxValue          float64
-	encodedData       *[]byte
+	encodedData       []byte
 	decodingBuffer    *bytes.Buffer
 }
 
@@ -62,13 +61,13 @@ func (d *Decoder) Process() []byte {
 
 					var cb uint32
 					if isSubsampled {
-						cb = d.readCb((*d.encodedData)[bitPosition+d.bytesPerParameter : bitPosition+d.bytesPerParameter*2])
+						cb = d.readCb(d.encodedData[bitPosition+d.bytesPerParameter : bitPosition+d.bytesPerParameter*2])
 						cbBuffer[cbGroup] = cb
 					} else {
 						cb = cbBuffer[cbGroup]
 					}
 
-					lum := d.readLum((*d.encodedData)[bitPosition : bitPosition+d.bytesPerParameter])
+					lum := d.readLum(d.encodedData[bitPosition : bitPosition+d.bytesPerParameter])
 					r, g, b := d.generateRgb(lum, cb)
 
 					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], r, d.bytesPerParameter)
@@ -102,11 +101,8 @@ func (d *Decoder) prepareDecodedBitmap(rowsData [][]byte) []byte {
 		d.decodingBuffer.Write(data)
 	}
 
-	d.assignFileSize()
-
 	decodedData := d.decodingBuffer.Bytes()
-
-	utils.WriteBytes(decodedData[2:6], d.FileSize, utils.Bits32)
+	utils.WriteBytes(decodedData[2:6], uint32(len(decodedData)), utils.Bits32)
 
 	return decodedData
 }
@@ -123,10 +119,6 @@ func (d *Decoder) writeBitmapHeader() {
 	header[26] = 1
 	utils.WriteBytes(header[28:30], d.bytesPerParameter*3*8, utils.Bits16)
 	d.decodingBuffer.Write(header)
-}
-
-func (d *Decoder) assignFileSize() {
-	d.FileSize = uint32(d.decodingBuffer.Len())
 }
 
 func (d *Decoder) readCb(data []byte) (cb uint32) {
@@ -216,7 +208,7 @@ func (d *Decoder) findRowStartingPosition(row uint32, encodedRowsLength []uint32
 	return
 }
 
-func NewDecoder(bytesPerParameter, height, width uint32, chromaMode []byte, encodedData *[]byte) *Decoder {
+func NewDecoder(bytesPerParameter, height, width uint32, chromaMode []byte, encodedData []byte) *Decoder {
 	fmt.Printf(
 		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n", width, height, bytesPerParameter,
 		utils.LumaMode, chromaMode[0], chromaMode[1],
@@ -224,7 +216,6 @@ func NewDecoder(bytesPerParameter, height, width uint32, chromaMode []byte, enco
 	return &Decoder{
 		Height:            height,
 		Width:             width,
-		FileSize:          0,
 		bytesPerParameter: bytesPerParameter,
 		chromaMode:        chromaMode,
 		maxValue:          utils.GetMaxValue(bytesPerParameter),

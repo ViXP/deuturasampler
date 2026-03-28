@@ -11,13 +11,12 @@ import (
 type Encoder struct {
 	Height            uint32
 	Width             uint32
-	FileSize          uint32
 	chromaMode        []byte
 	bytesPerPixel     uint32
 	bytesPerParameter uint32
 	maxValue          float64
-	rawData           *[]byte
-	processingBuffer  *bytes.Buffer
+	rawData           []byte
+	encodingBuffer    *bytes.Buffer
 }
 
 func (e *Encoder) Process() []byte {
@@ -37,7 +36,7 @@ func (e *Encoder) Process() []byte {
 
 			for col := uint32(0); col < e.Width; col++ {
 				position := utils.BmpHeaderSize + rowIndex*inputRowLength + col*e.bytesPerPixel
-				pixelData := (*e.rawData)[position : position+e.bytesPerPixel]
+				pixelData := e.rawData[position : position+e.bytesPerPixel]
 
 				r, g, b := e.readRgb(pixelData)
 				lum, cb := e.generateLumChrome(r, g, b)
@@ -64,10 +63,10 @@ func (e *Encoder) prepareEncodedDeuimg(rowsData [][]byte) []byte {
 	e.writeHeader()
 
 	for _, row := range rowsData {
-		e.processingBuffer.Write(row)
+		e.encodingBuffer.Write(row)
 	}
 
-	return e.processingBuffer.Bytes()
+	return e.encodingBuffer.Bytes()
 }
 
 func (e *Encoder) writeHeader() {
@@ -82,7 +81,7 @@ func (e *Encoder) writeHeader() {
 	utils.WriteBytes(header[13:17], e.bytesPerParameter, utils.Bits32)
 	header[17] = e.chromaMode[0]
 	header[18] = e.chromaMode[1]
-	e.processingBuffer.Write(header)
+	e.encodingBuffer.Write(header)
 }
 
 func (e *Encoder) generateLumChrome(r, g, b uint32) (lum, cb uint32) {
@@ -132,8 +131,8 @@ func (e *Encoder) readRgb(bytes_stream []byte) (r, g, b uint32) {
 	return
 }
 
-func NewEncoder(bytesPerPixel, height, width uint32, chromaMode []byte, rawData *[]byte) *Encoder {
-	bytesPerParameter := bytesPerPixel / 3
+func NewEncoder(bytesPerParameter, height, width uint32, chromaMode []byte, rawData []byte) *Encoder {
+	bytesPerPixel := bytesPerParameter * 3
 
 	fmt.Printf(
 		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n", width, height, bytesPerParameter,
@@ -145,11 +144,10 @@ func NewEncoder(bytesPerPixel, height, width uint32, chromaMode []byte, rawData 
 		bytesPerParameter: bytesPerParameter,
 		Height:            height,
 		Width:             width,
-		FileSize:          uint32(len(*rawData)),
 		chromaMode:        chromaMode,
 		maxValue:          utils.GetMaxValue(bytesPerParameter),
 		rawData:           rawData,
-		processingBuffer:  bytes.NewBuffer(nil),
+		encodingBuffer:    bytes.NewBuffer(nil),
 	}
 }
 

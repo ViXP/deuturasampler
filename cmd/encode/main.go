@@ -2,7 +2,6 @@ package main
 
 import (
 	"deuterasampler/internal/deuimg"
-	"encoding/binary"
 	"os"
 	"strconv"
 	"strings"
@@ -46,23 +45,10 @@ func encode(path string, chromaMode []byte) {
 }
 
 func encodeBmp(data []byte, chromaMode []byte) []byte {
-	var compression, width, height, bytesPerPixel uint32
+	headerParser := deuimg.BitmapHeaderParser{Data: data}
+	width, height, bytesPerParameter := headerParser.Parse()
 
-	if data[0] != 'B' || data[1] != 'M' {
-		panic("this is incorrect BMP file!")
-	}
-
-	compression = binary.LittleEndian.Uint32(data[30:34])
-
-	if compression != 0 {
-		panic("the file is already compressed!")
-	}
-
-	width = binary.LittleEndian.Uint32(data[18:22])
-	height = binary.LittleEndian.Uint32(data[22:26])
-	bytesPerPixel = uint32(binary.LittleEndian.Uint16(data[28:30])) / 8
-
-	encoder := deuimg.NewEncoder(bytesPerPixel, height, width, chromaMode, &data)
+	encoder := deuimg.NewEncoder(bytesPerParameter, height, width, chromaMode, data)
 
 	return encoder.Process()
 }

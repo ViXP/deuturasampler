@@ -5,8 +5,8 @@ import (
 	"math"
 )
 
-func GetMaxValue(number_of_bytes uint32) float64 {
-	return math.Pow(2, float64(number_of_bytes)*8) - 1.0
+func GetMaxValue(numOfBytes uint32) float64 {
+	return math.Pow(2, float64(numOfBytes)*8) - 1.0
 }
 
 func WriteBytes(slice []byte, value uint32, precision uint32) {

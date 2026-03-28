@@ -2,7 +2,6 @@ package main
 
 import (
 	"deuterasampler/internal/deuimg"
-	"encoding/binary"
 	"os"
 	"strings"
 )
@@ -26,19 +25,9 @@ func decode(path string) {
 }
 
 func decodeDEUImg(data []byte) []byte {
-	var width, height, bytesPerParameter uint32
-	var chromaMode []byte
-
-	if data[2] != '_' {
-		panic("this file is not encoded properly!")
-	}
-
-	width = binary.LittleEndian.Uint32(data[5:9])
-	height = binary.LittleEndian.Uint32(data[9:13])
-	bytesPerParameter = binary.LittleEndian.Uint32(data[13:17])
-	chromaMode = data[17:19]
-
-	decoder := deuimg.NewDecoder(bytesPerParameter, height, width, chromaMode, &data)
+	headerParser := deuimg.DeuImgHeaderParser{Data: data}
+	width, height, bytesPerParameter := headerParser.Parse()
+	decoder := deuimg.NewDecoder(bytesPerParameter, height, width, headerParser.ParseChromaMode(), data)
 
 	return decoder.Process()
 }
