@@ -5,6 +5,8 @@ import (
 	"deuterasampler/internal/utils"
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 )
 
 type Decoder struct {
@@ -21,72 +23,92 @@ type Decoder struct {
 func (d *Decoder) Process() []byte {
 	d.writeHeader()
 
-	fullRowWidth := ((d.Width*d.bytesPerParameter*3 + 3) / 4) * 4
+	decodedRowLength := ((d.Width*d.bytesPerParameter*3 + 3) / 4) * 4
 	outputData := make([][]byte, d.Height)
 	subsamplingFactors := utils.ResolveSubsamplingFactors(d.chromaMode)
+	encodedRowsLength := utils.CalculateEncodedRowLengths(subsamplingFactors, d.Width, d.bytesPerParameter)
 
-	var cbsPerRow uint32
+	var cbPerRow uint32
 	if subsamplingFactors[0] == 0 {
-		cbsPerRow = 1
+		cbPerRow = 1
 	} else {
-		cbsPerRow = uint32(math.Ceil(float64(d.Width) / float64(subsamplingFactors[0])))
+		cbPerRow = uint32(math.Ceil(float64(d.Width) / float64(subsamplingFactors[0])))
 	}
-	cbBuffer := make([]uint32, cbsPerRow)
 
-	var position uint32 = utils.DeuimgHeaderSize
-
-	for row := uint32(0); row < d.Height; row++ {
-		outputData[row] = make([]byte, fullRowWidth)
-		byteIndex := uint32(0)
-
-		var rowOrder uint32
-		if row == 0 {
-			rowOrder = 0
-		} else {
-			rowOrder = row % 2
-		}
-
-		for pxlNum := uint32(0); pxlNum < d.Width; pxlNum++ {
-			var cbGroup uint32
-			if subsamplingFactors[0] == 0 {
-				cbGroup = 0
-			} else {
-				cbGroup = pxlNum / subsamplingFactors[0]
-			}
-
-			var isSubsampled bool
-			if subsamplingFactors[rowOrder] == 0 {
-				isSubsampled = false
-			} else {
-				isSubsampled = pxlNum%subsamplingFactors[rowOrder] == 0
-			}
-
-			var cb uint32
-			if isSubsampled {
-				cb = d.readCb((*d.encodedData)[position+d.bytesPerParameter : position+d.bytesPerParameter*2])
-				cbBuffer[cbGroup] = cb
-			} else {
-				cb = cbBuffer[cbGroup]
-			}
-
-			lum := d.readLum((*d.encodedData)[position : position+d.bytesPerParameter])
-			r, g, b := d.generateRgb(lum, cb)
-
-			utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], r, d.bytesPerParameter)
-			byteIndex += d.bytesPerParameter
-
-			utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], g, d.bytesPerParameter)
-			byteIndex += d.bytesPerParameter
-
-			utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], b, d.bytesPerParameter)
-			byteIndex += d.bytesPerParameter
-
-			position += d.bytesPerParameter
-			if isSubsampled {
-				position += d.bytesPerParameter
-			}
-		}
+	routinesNum := runtime.NumCPU()
+	rowsPerRoutine := uint32(math.Ceil(float64(d.Height) / float64(routinesNum)))
+	if rowsPerRoutine%2 == 1 {
+		rowsPerRoutine += 1
 	}
+
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(routinesNum)
+
+	for i := range routinesNum {
+		go func(iteration uint32, wg *sync.WaitGroup) {
+			startRow := iteration * rowsPerRoutine
+			endRow := min(startRow+rowsPerRoutine, d.Height)
+			cbBuffer := make([]uint32, cbPerRow)
+
+			for row := startRow; row < endRow; row++ {
+				var bitPosition uint32 = utils.DeuimgHeaderSize
+
+				if row%2 == 0 {
+					bitPosition += (row / 2) * (encodedRowsLength[0] + encodedRowsLength[1])
+				} else {
+					bitPosition += (row-1)/2*(encodedRowsLength[0]+encodedRowsLength[1]) + encodedRowsLength[0]
+				}
+
+				outputData[row] = make([]byte, decodedRowLength)
+				byteIndex := uint32(0)
+				rowOrder := uint32(row % 2)
+
+				for pxlNum := uint32(0); pxlNum < d.Width; pxlNum++ {
+					var cbGroup uint32
+					if subsamplingFactors[0] == 0 {
+						cbGroup = 0
+					} else {
+						cbGroup = pxlNum / subsamplingFactors[0]
+					}
+
+					var isSubsampled bool
+					if subsamplingFactors[rowOrder] == 0 {
+						isSubsampled = false
+					} else {
+						isSubsampled = pxlNum%subsamplingFactors[rowOrder] == 0
+					}
+
+					var cb uint32
+					if isSubsampled {
+						cb = d.readCb((*d.encodedData)[bitPosition+d.bytesPerParameter : bitPosition+d.bytesPerParameter*2])
+						cbBuffer[cbGroup] = cb
+					} else {
+						cb = cbBuffer[cbGroup]
+					}
+
+					lum := d.readLum((*d.encodedData)[bitPosition : bitPosition+d.bytesPerParameter])
+					r, g, b := d.generateRgb(lum, cb)
+
+					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], r, d.bytesPerParameter)
+					byteIndex += d.bytesPerParameter
+
+					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], g, d.bytesPerParameter)
+					byteIndex += d.bytesPerParameter
+
+					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], b, d.bytesPerParameter)
+					byteIndex += d.bytesPerParameter
+
+					bitPosition += d.bytesPerParameter
+					if isSubsampled {
+						bitPosition += d.bytesPerParameter
+					}
+				}
+			}
+			wg.Done()
+		}(uint32(i), &waitGroup)
+	}
+
+	waitGroup.Wait()
 
 	for _, data := range outputData {
 		d.decodingBuffer.Write(data)
@@ -165,12 +187,12 @@ func (d *Decoder) generateRgb(lum, cb uint32) (r, g, b uint32) {
 	normal_r = normal_lum - differentiator
 	normal_g = normal_lum + differentiator
 
-	r, g, b = d.scalepxlNumors(normal_r, normal_g, normal_b)
+	r, g, b = d.scalePixelValues(normal_r, normal_g, normal_b)
 
 	return
 }
 
-func (d *Decoder) scalepxlNumors(normal_r, normal_g, normal_b float64) (r, g, b uint32) {
+func (d *Decoder) scalePixelValues(normal_r, normal_g, normal_b float64) (r, g, b uint32) {
 	r = uint32(math.Min(math.Max(normal_r*d.maxValue, 0), d.maxValue))
 	g = uint32(math.Min(math.Max(normal_g*d.maxValue, 0), d.maxValue))
 	b = uint32(math.Min(math.Max(normal_b*d.maxValue, 0), d.maxValue))
