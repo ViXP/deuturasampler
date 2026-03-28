@@ -21,11 +21,8 @@ type Encoder struct {
 }
 
 func (e *Encoder) Process() []byte {
-	e.writeHeader()
-
-	bytesPerInputWidth := ((e.Width*e.bytesPerPixel + 3) / 4) * 4
-
 	rowsData := make([][]byte, e.Height)
+	inputRowLength := utils.CalculateDecodedRowLength(e.Width, e.bytesPerParameter)
 	subsamplingFactors := utils.ResolveSubsamplingFactors(e.chromaMode)
 	encodedRowsLength := utils.CalculateEncodedRowLengths(subsamplingFactors, e.Width, e.bytesPerParameter)
 
@@ -39,7 +36,7 @@ func (e *Encoder) Process() []byte {
 			rowsData[rowIndex] = make([]byte, encodedRowsLength[rowOrder])
 
 			for col := uint32(0); col < e.Width; col++ {
-				position := utils.BmpHeaderSize + rowIndex*bytesPerInputWidth + col*e.bytesPerPixel
+				position := utils.BmpHeaderSize + rowIndex*inputRowLength + col*e.bytesPerPixel
 				pixelData := (*e.rawData)[position : position+e.bytesPerPixel]
 
 				r, g, b := e.readRgb(pixelData)
@@ -60,11 +57,32 @@ func (e *Encoder) Process() []byte {
 
 	wg.Wait()
 
+	return e.prepareEncodedDeuimg(rowsData)
+}
+
+func (e *Encoder) prepareEncodedDeuimg(rowsData [][]byte) []byte {
+	e.writeHeader()
+
 	for _, row := range rowsData {
 		e.processingBuffer.Write(row)
 	}
 
 	return e.processingBuffer.Bytes()
+}
+
+func (e *Encoder) writeHeader() {
+	header := make([]byte, utils.DeuimgHeaderSize)
+
+	for i, sym := range "(-_-)" {
+		header[i] = byte(sym)
+	}
+
+	utils.WriteBytes(header[5:9], e.Width, utils.Bits32)
+	utils.WriteBytes(header[9:13], e.Height, utils.Bits32)
+	utils.WriteBytes(header[13:17], e.bytesPerParameter, utils.Bits32)
+	header[17] = e.chromaMode[0]
+	header[18] = e.chromaMode[1]
+	e.processingBuffer.Write(header)
 }
 
 func (e *Encoder) generateLumChrome(r, g, b uint32) (lum, cb uint32) {
@@ -112,21 +130,6 @@ func (e *Encoder) readRgb(bytes_stream []byte) (r, g, b uint32) {
 	}
 
 	return
-}
-
-func (e *Encoder) writeHeader() {
-	header := make([]byte, utils.DeuimgHeaderSize)
-
-	for i, sym := range "(-_-)" {
-		header[i] = byte(sym)
-	}
-
-	utils.WriteBytes(header[5:9], e.Width, utils.Bits32)
-	utils.WriteBytes(header[9:13], e.Height, utils.Bits32)
-	utils.WriteBytes(header[13:17], e.bytesPerParameter, utils.Bits32)
-	header[17] = e.chromaMode[0]
-	header[18] = e.chromaMode[1]
-	e.processingBuffer.Write(header)
 }
 
 func NewEncoder(bytesPerPixel, height, width uint32, chromaMode []byte, rawData *[]byte) *Encoder {

@@ -21,47 +21,31 @@ type Decoder struct {
 }
 
 func (d *Decoder) Process() []byte {
-	d.writeHeader()
+	var waitGroup sync.WaitGroup
 
-	decodedRowLength := ((d.Width*d.bytesPerParameter*3 + 3) / 4) * 4
-	outputData := make([][]byte, d.Height)
 	subsamplingFactors := utils.ResolveSubsamplingFactors(d.chromaMode)
+	cbPerRow := d.calculateCbPerRow(subsamplingFactors)
+
+	outputData := make([][]byte, d.Height)
+	decodedRowLength := utils.CalculateDecodedRowLength(d.Width, d.bytesPerParameter)
 	encodedRowsLength := utils.CalculateEncodedRowLengths(subsamplingFactors, d.Width, d.bytesPerParameter)
 
-	var cbPerRow uint32
-	if subsamplingFactors[0] == 0 {
-		cbPerRow = 1
-	} else {
-		cbPerRow = uint32(math.Ceil(float64(d.Width) / float64(subsamplingFactors[0])))
-	}
-
 	routinesNum := runtime.NumCPU()
-	rowsPerRoutine := uint32(math.Ceil(float64(d.Height) / float64(routinesNum)))
-	if rowsPerRoutine%2 == 1 {
-		rowsPerRoutine += 1
-	}
-
-	var waitGroup sync.WaitGroup
+	rowsPerRoutine := d.calculateRowsPerRoutine(routinesNum)
 	waitGroup.Add(routinesNum)
 
 	for i := range routinesNum {
 		go func(iteration uint32, wg *sync.WaitGroup) {
-			startRow := iteration * rowsPerRoutine
-			endRow := min(startRow+rowsPerRoutine, d.Height)
 			cbBuffer := make([]uint32, cbPerRow)
 
+			startRow := iteration * rowsPerRoutine
+			endRow := min(startRow+rowsPerRoutine, d.Height)
+
 			for row := startRow; row < endRow; row++ {
-				var bitPosition uint32 = utils.DeuimgHeaderSize
-
-				if row%2 == 0 {
-					bitPosition += (row / 2) * (encodedRowsLength[0] + encodedRowsLength[1])
-				} else {
-					bitPosition += (row-1)/2*(encodedRowsLength[0]+encodedRowsLength[1]) + encodedRowsLength[0]
-				}
-
 				outputData[row] = make([]byte, decodedRowLength)
 				byteIndex := uint32(0)
 				rowOrder := uint32(row % 2)
+				bitPosition := d.findRowStartingPosition(row, encodedRowsLength)
 
 				for pxlNum := uint32(0); pxlNum < d.Width; pxlNum++ {
 					var cbGroup uint32
@@ -71,10 +55,8 @@ func (d *Decoder) Process() []byte {
 						cbGroup = pxlNum / subsamplingFactors[0]
 					}
 
-					var isSubsampled bool
-					if subsamplingFactors[rowOrder] == 0 {
-						isSubsampled = false
-					} else {
+					isSubsampled := false
+					if subsamplingFactors[rowOrder] != 0 {
 						isSubsampled = pxlNum%subsamplingFactors[rowOrder] == 0
 					}
 
@@ -110,20 +92,26 @@ func (d *Decoder) Process() []byte {
 
 	waitGroup.Wait()
 
-	for _, data := range outputData {
+	return d.prepareDecodedBitmap(outputData)
+}
+
+func (d *Decoder) prepareDecodedBitmap(rowsData [][]byte) []byte {
+	d.writeBitmapHeader()
+
+	for _, data := range rowsData {
 		d.decodingBuffer.Write(data)
 	}
 
 	d.assignFileSize()
 
-	decoded_data := d.decodingBuffer.Bytes()
+	decodedData := d.decodingBuffer.Bytes()
 
-	utils.WriteBytes(decoded_data[2:6], d.FileSize, utils.Bits32)
+	utils.WriteBytes(decodedData[2:6], d.FileSize, utils.Bits32)
 
-	return decoded_data
+	return decodedData
 }
 
-func (d *Decoder) writeHeader() {
+func (d *Decoder) writeBitmapHeader() {
 	header := make([]byte, utils.BmpHeaderSize)
 	header[0] = byte('B')
 	header[1] = byte('M')
@@ -196,6 +184,35 @@ func (d *Decoder) scalePixelValues(normal_r, normal_g, normal_b float64) (r, g, 
 	r = uint32(math.Min(math.Max(normal_r*d.maxValue, 0), d.maxValue))
 	g = uint32(math.Min(math.Max(normal_g*d.maxValue, 0), d.maxValue))
 	b = uint32(math.Min(math.Max(normal_b*d.maxValue, 0), d.maxValue))
+	return
+}
+
+func (d *Decoder) calculateRowsPerRoutine(routinesNum int) uint32 {
+	rowsPerRoutine := uint32(math.Ceil(float64(d.Height) / float64(routinesNum)))
+	if rowsPerRoutine%2 == 1 {
+		rowsPerRoutine += 1
+	}
+	return rowsPerRoutine
+}
+
+func (d *Decoder) calculateCbPerRow(subsamplingFactors []uint32) (cbPerRow uint32) {
+	if subsamplingFactors[0] == 0 {
+		cbPerRow = 1
+	} else {
+		cbPerRow = uint32(math.Ceil(float64(d.Width) / float64(subsamplingFactors[0])))
+	}
+	return
+}
+
+func (d *Decoder) findRowStartingPosition(row uint32, encodedRowsLength []uint32) (rowStartPosition uint32) {
+	rowStartPosition = utils.DeuimgHeaderSize
+
+	if row%2 == 0 {
+		rowStartPosition += (row / 2) * (encodedRowsLength[0] + encodedRowsLength[1])
+	} else {
+		rowStartPosition += (row-1)/2*(encodedRowsLength[0]+encodedRowsLength[1]) + encodedRowsLength[0]
+	}
+
 	return
 }
 

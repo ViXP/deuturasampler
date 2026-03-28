@@ -51,3 +51,7 @@ func CalculateEncodedRowLengths(subsamplingFactors []uint32, imageWidth, bytesPe
 	}
 	return
 }
+
+func CalculateDecodedRowLength(width uint32, bytesPerParameter uint32) uint32 {
+	return ((width*bytesPerParameter*3 + 3) / 4) * 4
+}
