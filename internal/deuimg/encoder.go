@@ -1,7 +1,7 @@
 package deuimg
 
 import (
-	"bytes"
+	"deuterasampler/internal/parsers"
 	"deuterasampler/internal/utils"
 	"fmt"
 	"math"
@@ -9,44 +9,40 @@ import (
 )
 
 type Encoder struct {
-	Height            uint32
-	Width             uint32
-	chromaMode        []byte
-	bytesPerPixel     uint32
-	bytesPerParameter uint32
-	maxValue          float64
-	rawData           []byte
-	encodingBuffer    *bytes.Buffer
+	metadata      *parsers.ImageMetadata
+	bytesPerPixel uint32
+	maxValue      float64
+	rawData       []byte
 }
 
-func (e *Encoder) Process() []byte {
-	rowsData := make([][]byte, e.Height)
-	inputRowLength := utils.CalculateDecodedRowLength(e.Width, e.bytesPerParameter)
-	subsamplingFactors := utils.ResolveSubsamplingFactors(e.chromaMode)
-	encodedRowsLength := utils.CalculateEncodedRowLengths(subsamplingFactors, e.Width, e.bytesPerParameter)
+func (e *Encoder) Process() [][]byte {
+	rowsData := make([][]byte, e.metadata.Height)
+	inputRowLength := utils.CalculateDecodedRowLength(e.metadata.Width, e.metadata.BytesPerParameter)
+	subsamplingFactors := utils.ResolveSubsamplingFactors(e.metadata.ChromaMode)
+	encodedRowsLength := utils.CalculateEncodedRowLengths(subsamplingFactors, e.metadata.Width, e.metadata.BytesPerParameter)
 
 	var wg sync.WaitGroup
-	wg.Add(int(e.Height))
+	wg.Add(int(e.metadata.Height))
 
-	for row := uint32(0); row < e.Height; row++ {
+	for row := uint32(0); row < e.metadata.Height; row++ {
 		go func(rowIndex uint32, waitGroup *sync.WaitGroup) {
 			rowOrder := byte(rowIndex % 2)
 			byteIndex := uint32(0)
 			rowsData[rowIndex] = make([]byte, encodedRowsLength[rowOrder])
 
-			for col := uint32(0); col < e.Width; col++ {
+			for col := uint32(0); col < e.metadata.Width; col++ {
 				position := utils.BmpHeaderSize + rowIndex*inputRowLength + col*e.bytesPerPixel
 				pixelData := e.rawData[position : position+e.bytesPerPixel]
 
 				r, g, b := e.readRgb(pixelData)
 				lum, cb := e.generateLumChrome(r, g, b)
 
-				utils.WriteBytes(rowsData[rowIndex][byteIndex:byteIndex+e.bytesPerParameter], lum, e.bytesPerParameter)
-				byteIndex += e.bytesPerParameter
+				utils.WriteBytes(rowsData[rowIndex][byteIndex:byteIndex+e.metadata.BytesPerParameter], lum, e.metadata.BytesPerParameter)
+				byteIndex += e.metadata.BytesPerParameter
 
 				if subsamplingFactors[rowOrder] != 0 && (col/subsamplingFactors[rowOrder])*subsamplingFactors[rowOrder] == col {
-					utils.WriteBytes(rowsData[rowIndex][byteIndex:byteIndex+e.bytesPerParameter], cb, e.bytesPerParameter)
-					byteIndex += e.bytesPerParameter
+					utils.WriteBytes(rowsData[rowIndex][byteIndex:byteIndex+e.metadata.BytesPerParameter], cb, e.metadata.BytesPerParameter)
+					byteIndex += e.metadata.BytesPerParameter
 				}
 			}
 
@@ -56,32 +52,7 @@ func (e *Encoder) Process() []byte {
 
 	wg.Wait()
 
-	return e.prepareEncodedDeuimg(rowsData)
-}
-
-func (e *Encoder) prepareEncodedDeuimg(rowsData [][]byte) []byte {
-	e.writeHeader()
-
-	for _, row := range rowsData {
-		e.encodingBuffer.Write(row)
-	}
-
-	return e.encodingBuffer.Bytes()
-}
-
-func (e *Encoder) writeHeader() {
-	header := make([]byte, utils.DeuimgHeaderSize)
-
-	for i, sym := range "(-_-)" {
-		header[i] = byte(sym)
-	}
-
-	utils.WriteBytes(header[5:9], e.Width, utils.Bits32)
-	utils.WriteBytes(header[9:13], e.Height, utils.Bits32)
-	utils.WriteBytes(header[13:17], e.bytesPerParameter, utils.Bits32)
-	header[17] = e.chromaMode[0]
-	header[18] = e.chromaMode[1]
-	e.encodingBuffer.Write(header)
+	return rowsData
 }
 
 func (e *Encoder) generateLumChrome(r, g, b uint32) (lum, cb uint32) {
@@ -110,44 +81,41 @@ func (e *Encoder) normalizeColors(r, g, b uint32) (normal_r, normal_g, normal_b 
 	return
 }
 
-func (e *Encoder) readRgb(bytes_stream []byte) (r, g, b uint32) {
-	switch e.bytesPerParameter {
+func (e *Encoder) readRgb(bytesStream []byte) (r, g, b uint32) {
+	switch e.metadata.BytesPerParameter {
 	case utils.Bits8:
-		r = uint32(bytes_stream[0])
-		g = uint32(bytes_stream[1])
-		b = uint32(bytes_stream[2])
+		r = uint32(bytesStream[0])
+		g = uint32(bytesStream[1])
+		b = uint32(bytesStream[2])
 	case utils.Bits16:
-		r = uint32(bytes_stream[0]) | uint32(bytes_stream[1])<<8
-		g = uint32(bytes_stream[2]) | uint32(bytes_stream[3])<<8
-		b = uint32(bytes_stream[4]) | uint32(bytes_stream[5])<<8
+		r = uint32(bytesStream[0]) | uint32(bytesStream[1])<<8
+		g = uint32(bytesStream[2]) | uint32(bytesStream[3])<<8
+		b = uint32(bytesStream[4]) | uint32(bytesStream[5])<<8
 	case utils.Bits32:
-		r = uint32(bytes_stream[0]) | uint32(bytes_stream[1])<<8 | uint32(bytes_stream[2])<<16 | uint32(bytes_stream[3])<<24
-		g = uint32(bytes_stream[4]) | uint32(bytes_stream[5])<<8 | uint32(bytes_stream[6])<<16 | uint32(bytes_stream[7])<<24
-		b = uint32(bytes_stream[8]) | uint32(bytes_stream[9])<<8 | uint32(bytes_stream[10])<<16 | uint32(bytes_stream[11])<<24
+		r = uint32(bytesStream[0]) | uint32(bytesStream[1])<<8 | uint32(bytesStream[2])<<16 | uint32(bytesStream[3])<<24
+		g = uint32(bytesStream[4]) | uint32(bytesStream[5])<<8 | uint32(bytesStream[6])<<16 | uint32(bytesStream[7])<<24
+		b = uint32(bytesStream[8]) | uint32(bytesStream[9])<<8 | uint32(bytesStream[10])<<16 | uint32(bytesStream[11])<<24
 	default:
-		panic(fmt.Sprintf("The %vbits/color space is not supported!", e.bytesPerParameter*8))
+		panic(fmt.Sprintf("The %vbits/color space is not supported!", e.metadata.BytesPerParameter*8))
 	}
 
 	return
 }
 
-func NewEncoder(bytesPerParameter, height, width uint32, chromaMode []byte, rawData []byte) *Encoder {
-	bytesPerPixel := bytesPerParameter * 3
+func NewEncoder(metadata *parsers.ImageMetadata, rawData []byte) *Encoder {
+	bytesPerPixel := metadata.BytesPerParameter * 3
 
 	fmt.Printf(
-		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n", width, height, bytesPerParameter,
-		utils.LumaMode, chromaMode[0], chromaMode[1],
+		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n",
+		metadata.Width, metadata.Height, metadata.BytesPerParameter,
+		utils.LumaMode, metadata.ChromaMode[0], metadata.ChromaMode[1],
 	)
 
 	return &Encoder{
-		bytesPerPixel:     bytesPerPixel,
-		bytesPerParameter: bytesPerParameter,
-		Height:            height,
-		Width:             width,
-		chromaMode:        chromaMode,
-		maxValue:          utils.GetMaxValue(bytesPerParameter),
-		rawData:           rawData,
-		encodingBuffer:    bytes.NewBuffer(nil),
+		metadata:      metadata,
+		bytesPerPixel: bytesPerPixel,
+		maxValue:      utils.GetMaxValue(metadata.BytesPerParameter),
+		rawData:       rawData,
 	}
 }
 

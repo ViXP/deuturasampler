@@ -1,7 +1,7 @@
 package deuimg
 
 import (
-	"bytes"
+	"deuterasampler/internal/parsers"
 	"deuterasampler/internal/utils"
 	"fmt"
 	"math"
@@ -10,24 +10,21 @@ import (
 )
 
 type Decoder struct {
-	Height            uint32
-	Width             uint32
-	bytesPerParameter uint32
-	chromaMode        []byte
-	maxValue          float64
-	encodedData       []byte
-	decodingBuffer    *bytes.Buffer
+	metadata    *parsers.ImageMetadata
+	maxValue    float64
+	encodedData []byte
 }
 
-func (d *Decoder) Process() []byte {
+func (d *Decoder) Process() [][]byte {
 	var waitGroup sync.WaitGroup
 
-	subsamplingFactors := utils.ResolveSubsamplingFactors(d.chromaMode)
+	subsamplingFactors := utils.ResolveSubsamplingFactors(d.metadata.ChromaMode)
 	cbPerRow := d.calculateCbPerRow(subsamplingFactors)
 
-	outputData := make([][]byte, d.Height)
-	decodedRowLength := utils.CalculateDecodedRowLength(d.Width, d.bytesPerParameter)
-	encodedRowsLength := utils.CalculateEncodedRowLengths(subsamplingFactors, d.Width, d.bytesPerParameter)
+	outputData := make([][]byte, d.metadata.Height)
+	decodedRowLength := utils.CalculateDecodedRowLength(d.metadata.Width, d.metadata.BytesPerParameter)
+	encodedRowsLength :=
+		utils.CalculateEncodedRowLengths(subsamplingFactors, d.metadata.Width, d.metadata.BytesPerParameter)
 
 	routinesNum := runtime.NumCPU()
 	rowsPerRoutine := d.calculateRowsPerRoutine(routinesNum)
@@ -38,7 +35,7 @@ func (d *Decoder) Process() []byte {
 			cbBuffer := make([]uint32, cbPerRow)
 
 			startRow := iteration * rowsPerRoutine
-			endRow := min(startRow+rowsPerRoutine, d.Height)
+			endRow := min(startRow+rowsPerRoutine, d.metadata.Height)
 
 			for row := startRow; row < endRow; row++ {
 				outputData[row] = make([]byte, decodedRowLength)
@@ -46,7 +43,7 @@ func (d *Decoder) Process() []byte {
 				rowOrder := uint32(row % 2)
 				bitPosition := d.findRowStartingPosition(row, encodedRowsLength)
 
-				for pxlNum := uint32(0); pxlNum < d.Width; pxlNum++ {
+				for pxlNum := uint32(0); pxlNum < d.metadata.Width; pxlNum++ {
 					var cbGroup uint32
 					if subsamplingFactors[0] == 0 {
 						cbGroup = 0
@@ -61,27 +58,27 @@ func (d *Decoder) Process() []byte {
 
 					var cb uint32
 					if isSubsampled {
-						cb = d.readCb(d.encodedData[bitPosition+d.bytesPerParameter : bitPosition+d.bytesPerParameter*2])
+						cb = d.readCb(d.encodedData[bitPosition+d.metadata.BytesPerParameter : bitPosition+d.metadata.BytesPerParameter*2])
 						cbBuffer[cbGroup] = cb
 					} else {
 						cb = cbBuffer[cbGroup]
 					}
 
-					lum := d.readLum(d.encodedData[bitPosition : bitPosition+d.bytesPerParameter])
+					lum := d.readLum(d.encodedData[bitPosition : bitPosition+d.metadata.BytesPerParameter])
 					r, g, b := d.generateRgb(lum, cb)
 
-					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], r, d.bytesPerParameter)
-					byteIndex += d.bytesPerParameter
+					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.metadata.BytesPerParameter], r, d.metadata.BytesPerParameter)
+					byteIndex += d.metadata.BytesPerParameter
 
-					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], g, d.bytesPerParameter)
-					byteIndex += d.bytesPerParameter
+					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.metadata.BytesPerParameter], g, d.metadata.BytesPerParameter)
+					byteIndex += d.metadata.BytesPerParameter
 
-					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.bytesPerParameter], b, d.bytesPerParameter)
-					byteIndex += d.bytesPerParameter
+					utils.WriteBytes(outputData[row][byteIndex:byteIndex+d.metadata.BytesPerParameter], b, d.metadata.BytesPerParameter)
+					byteIndex += d.metadata.BytesPerParameter
 
-					bitPosition += d.bytesPerParameter
+					bitPosition += d.metadata.BytesPerParameter
 					if isSubsampled {
-						bitPosition += d.bytesPerParameter
+						bitPosition += d.metadata.BytesPerParameter
 					}
 				}
 			}
@@ -91,38 +88,11 @@ func (d *Decoder) Process() []byte {
 
 	waitGroup.Wait()
 
-	return d.prepareDecodedBitmap(outputData)
-}
-
-func (d *Decoder) prepareDecodedBitmap(rowsData [][]byte) []byte {
-	d.writeBitmapHeader()
-
-	for _, data := range rowsData {
-		d.decodingBuffer.Write(data)
-	}
-
-	decodedData := d.decodingBuffer.Bytes()
-	utils.WriteBytes(decodedData[2:6], uint32(len(decodedData)), utils.Bits32)
-
-	return decodedData
-}
-
-func (d *Decoder) writeBitmapHeader() {
-	header := make([]byte, utils.BmpHeaderSize)
-	header[0] = byte('B')
-	header[1] = byte('M')
-
-	utils.WriteBytes(header[10:14], utils.BmpHeaderSize, utils.Bits32)
-	header[14] = byte(40)
-	utils.WriteBytes(header[18:22], d.Width, utils.Bits32)
-	utils.WriteBytes(header[22:26], d.Height, utils.Bits32)
-	header[26] = 1
-	utils.WriteBytes(header[28:30], d.bytesPerParameter*3*8, utils.Bits16)
-	d.decodingBuffer.Write(header)
+	return outputData
 }
 
 func (d *Decoder) readCb(data []byte) (cb uint32) {
-	switch d.bytesPerParameter {
+	switch d.metadata.BytesPerParameter {
 	case utils.Bits8:
 		cb = uint32(data[0])
 	case utils.Bits16:
@@ -130,14 +100,14 @@ func (d *Decoder) readCb(data []byte) (cb uint32) {
 	case utils.Bits32:
 		cb = uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 	default:
-		panic(fmt.Sprintf("The %vbits/parameter is not supported!", d.bytesPerParameter*8))
+		panic(fmt.Sprintf("The %vbits/parameter is not supported!", d.metadata.BytesPerParameter*8))
 	}
 
 	return
 }
 
 func (d *Decoder) readLum(data []byte) (lum uint32) {
-	switch d.bytesPerParameter {
+	switch d.metadata.BytesPerParameter {
 	case utils.Bits8:
 		lum = uint32(data[0])
 	case utils.Bits16:
@@ -145,7 +115,7 @@ func (d *Decoder) readLum(data []byte) (lum uint32) {
 	case utils.Bits32:
 		lum = uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 	default:
-		panic(fmt.Sprintf("The %vbits/parameter is not supported!", d.bytesPerParameter*8))
+		panic(fmt.Sprintf("The %vbits/parameter is not supported!", d.metadata.BytesPerParameter*8))
 	}
 
 	return
@@ -180,7 +150,7 @@ func (d *Decoder) scalePixelValues(normal_r, normal_g, normal_b float64) (r, g, 
 }
 
 func (d *Decoder) calculateRowsPerRoutine(routinesNum int) uint32 {
-	rowsPerRoutine := uint32(math.Ceil(float64(d.Height) / float64(routinesNum)))
+	rowsPerRoutine := uint32(math.Ceil(float64(d.metadata.Height) / float64(routinesNum)))
 	if rowsPerRoutine%2 == 1 {
 		rowsPerRoutine += 1
 	}
@@ -191,7 +161,7 @@ func (d *Decoder) calculateCbPerRow(subsamplingFactors []uint32) (cbPerRow uint3
 	if subsamplingFactors[0] == 0 {
 		cbPerRow = 1
 	} else {
-		cbPerRow = uint32(math.Ceil(float64(d.Width) / float64(subsamplingFactors[0])))
+		cbPerRow = uint32(math.Ceil(float64(d.metadata.Width) / float64(subsamplingFactors[0])))
 	}
 	return
 }
@@ -208,19 +178,16 @@ func (d *Decoder) findRowStartingPosition(row uint32, encodedRowsLength []uint32
 	return
 }
 
-func NewDecoder(bytesPerParameter, height, width uint32, chromaMode []byte, encodedData []byte) *Decoder {
+func NewDecoder(metadata *parsers.ImageMetadata, encodedData []byte) *Decoder {
 	fmt.Printf(
-		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n", width, height, bytesPerParameter,
-		utils.LumaMode, chromaMode[0], chromaMode[1],
+		"Width: %v, Height: %v, Bytes per parameter: %v, Subsampling mode: %v:%v:%v\n",
+		metadata.Width, metadata.Height, metadata.BytesPerParameter, utils.LumaMode, metadata.ChromaMode[0],
+		metadata.ChromaMode[1],
 	)
 	return &Decoder{
-		Height:            height,
-		Width:             width,
-		bytesPerParameter: bytesPerParameter,
-		chromaMode:        chromaMode,
-		maxValue:          utils.GetMaxValue(bytesPerParameter),
-		encodedData:       encodedData,
-		decodingBuffer:    bytes.NewBuffer(nil),
+		metadata:    metadata,
+		maxValue:    utils.GetMaxValue(metadata.BytesPerParameter),
+		encodedData: encodedData,
 	}
 }
 

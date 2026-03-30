@@ -2,6 +2,8 @@ package main
 
 import (
 	"deuterasampler/internal/deuimg"
+	"deuterasampler/internal/factories"
+	"deuterasampler/internal/parsers"
 	"os"
 	"strings"
 )
@@ -25,9 +27,8 @@ func decode(path string) {
 }
 
 func decodeDEUImg(data []byte) []byte {
-	headerParser := deuimg.DeuImgHeaderParser{Data: data}
-	width, height, bytesPerParameter := headerParser.Parse()
-	decoder := deuimg.NewDecoder(bytesPerParameter, height, width, headerParser.ParseChromaMode(), data)
+	headerParser := parsers.DeuImgHeaderParser{Data: data}
+	imageMetadata := headerParser.Parse()
 
-	return decoder.Process()
+	return factories.NewBitmapFactory(imageMetadata).Create(deuimg.NewDecoder(imageMetadata, data).Process())
 }

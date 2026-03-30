@@ -2,6 +2,8 @@ package main
 
 import (
 	"deuterasampler/internal/deuimg"
+	"deuterasampler/internal/factories"
+	"deuterasampler/internal/parsers"
 	"os"
 	"strconv"
 	"strings"
@@ -45,10 +47,9 @@ func encode(path string, chromaMode []byte) {
 }
 
 func encodeBmp(data []byte, chromaMode []byte) []byte {
-	headerParser := deuimg.BitmapHeaderParser{Data: data}
-	width, height, bytesPerParameter := headerParser.Parse()
+	headerParser := parsers.BitmapHeaderParser{Data: data}
+	imageMetadata := headerParser.Parse()
+	imageMetadata.ChromaMode = chromaMode
 
-	encoder := deuimg.NewEncoder(bytesPerParameter, height, width, chromaMode, data)
-
-	return encoder.Process()
+	return factories.NewDeuImgFileFactory(imageMetadata).Create(deuimg.NewEncoder(imageMetadata, data).Process())
 }
